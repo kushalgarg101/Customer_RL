@@ -1,0 +1,55 @@
+{
+  "model": "gemini-3.1-flash-lite-preview",
+  "api_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "average_score": 0.7673,
+  "results": [
+    {
+      "task_id": "easy-password-reset",
+      "difficulty": "easy",
+      "score": 0.5,
+      "steps": 5,
+      "cumulative_reward": 0.4,
+      "classification": "account_access",
+      "priority": "high",
+      "queue": "trust_safety_queue",
+      "resolution": "resolved",
+      "last_raw_response": "{\"action_type\":\"resolve_ticket\",\"resolution_code\":\"resolved\"}",
+      "last_normalized_action": {
+        "action_type": "resolve_ticket",
+        "resolution_code": "resolved"
+      }
+    },
+    {
+      "task_id": "medium-shipping-refund",
+      "difficulty": "medium",
+      "score": 1.0,
+      "steps": 5,
+      "cumulative_reward": 1.0,
+      "classification": "shipping",
+      "priority": "high",
+      "queue": "logistics_queue",
+      "resolution": "needs_followup",
+      "last_raw_response": "{\"action_type\":\"resolve_ticket\",\"resolution_code\":\"needs_followup\"}",
+      "last_normalized_action": {
+        "action_type": "resolve_ticket",
+        "resolution_code": "needs_followup"
+      }
+    },
+    {
+      "task_id": "hard-enterprise-outage",
+      "difficulty": "hard",
+      "score": 0.802,
+      "steps": 5,
+      "cumulative_reward": 0.85,
+      "classification": "enterprise_escalation",
+      "priority": "urgent",
+      "queue": "enterprise_queue",
+      "resolution": "needs_followup",
+      "last_raw_response": "{\"action_type\":\"resolve_ticket\",\"resolution_code\":\"needs_followup\"}",
+      "last_normalized_action": {
+        "action_type": "resolve_ticket",
+        "resolution_code": "needs_followup"
+      }
+    }
+  ]
+}

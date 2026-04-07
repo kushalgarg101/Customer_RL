@@ -73,22 +73,29 @@ def test_load_dotenv_file_sets_missing_values_only(tmp_path, monkeypatch) -> Non
     assert os.environ["API_BASE_URL"] == "https://already-set.test/v1"
 
 
-def test_emit_functions_match_sample_contract(capsys) -> None:
+def test_emit_functions_match_parser_compatible_contract(capsys) -> None:
     inference.emit_start("easy-password-reset", inference.BENCHMARK_NAME, "test-model")
     inference.emit_step(
         step=1,
+        task="easy-password-reset",
         action='{"action_type":"inspect_ticket"}',
         reward=0.05,
         done=False,
         error=None,
     )
-    inference.emit_end(success=True, steps=1, score=1.0, rewards=[0.05])
+    inference.emit_end(
+        task="easy-password-reset",
+        success=True,
+        steps=1,
+        score=1.0,
+        rewards=[0.05],
+    )
 
     lines = [line for line in capsys.readouterr().out.strip().splitlines() if line]
     assert lines == [
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
-        "[STEP] step=1 action={\"action_type\":\"inspect_ticket\"} reward=0.05 done=false error=null",
-        "[END] success=true steps=1 score=1.00 rewards=0.05",
+        "[STEP] step=1 task=easy-password-reset action={\"action_type\":\"inspect_ticket\"} reward=0.05 done=false error=null",
+        "[END] task=easy-password-reset success=true steps=1 score=1.00 rewards=0.05",
     ]
 
 
@@ -186,15 +193,15 @@ def test_run_task_emits_per_step_structured_lines(monkeypatch, capsys) -> None:
     assert captured.err == ""
     assert [line for line in captured.out.strip().splitlines() if line] == [
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
-        "[STEP] step=1 action={\"action_type\":\"inspect_ticket\"} reward=0.05 done=false error=null",
-        "[STEP] step=2 action={\"action_type\":\"resolve_ticket\",\"resolution_code\":\"resolved\"} reward=0.95 done=true error=null",
-        "[END] success=true steps=2 score=1.00 rewards=0.05,0.95",
+        "[STEP] step=1 task=easy-password-reset action={\"action_type\":\"inspect_ticket\"} reward=0.05 done=false error=null",
+        "[STEP] step=2 task=easy-password-reset action={\"action_type\":\"resolve_ticket\",\"resolution_code\":\"resolved\"} reward=0.95 done=true error=null",
+        "[END] task=easy-password-reset success=true steps=2 score=1.00 rewards=0.05,0.95",
     ]
     assert result["score"] == 1.0
     assert result["success"] is True
 
 
-def test_run_task_always_emits_end_on_failure(monkeypatch, capsys) -> None:
+def test_run_task_emits_fallback_step_on_failure_before_env_step(monkeypatch, capsys) -> None:
     class FakeSyncEnv:
         def __enter__(self):
             return self
@@ -243,7 +250,8 @@ def test_run_task_always_emits_end_on_failure(monkeypatch, capsys) -> None:
     captured = capsys.readouterr()
     assert [line for line in captured.out.strip().splitlines() if line] == [
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
-        "[END] success=false steps=0 score=0.00 rewards=",
+        "[STEP] step=1 task=easy-password-reset action=null reward=0.00 done=true error=bad\\u0020response",
+        "[END] task=easy-password-reset success=false steps=0 score=0.00 rewards=",
     ]
     assert result["score"] == 0.0
     assert result["success"] is False
@@ -323,14 +331,15 @@ def test_run_task_preserves_partial_score_after_late_failure(monkeypatch, capsys
     captured = capsys.readouterr()
     assert [line for line in captured.out.strip().splitlines() if line] == [
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
-        "[STEP] step=1 action={\"action_type\":\"inspect_ticket\"} reward=0.25 done=false error=null",
-        "[END] success=false steps=1 score=0.25 rewards=0.25",
+        "[STEP] step=1 task=easy-password-reset action={\"action_type\":\"inspect_ticket\"} reward=0.25 done=false error=null",
+        "[END] task=easy-password-reset success=false steps=1 score=0.25 rewards=0.25",
     ]
     assert result["score"] == 0.25
     assert result["success"] is False
     assert result["error"] == "late failure"
 
-def test_run_task_emits_start_and_end_when_client_init_fails(monkeypatch, capsys) -> None:
+
+def test_run_task_emits_start_step_and_end_when_client_init_fails(monkeypatch, capsys) -> None:
     monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
     monkeypatch.setattr(
         inference,
@@ -348,7 +357,8 @@ def test_run_task_emits_start_and_end_when_client_init_fails(monkeypatch, capsys
     captured = capsys.readouterr()
     assert [line for line in captured.out.strip().splitlines() if line] == [
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
-        "[END] success=false steps=0 score=0.00 rewards=",
+        "[STEP] step=1 task=easy-password-reset action=null reward=0.00 done=true error=missing\\u0020token",
+        "[END] task=easy-password-reset success=false steps=0 score=0.00 rewards=",
     ]
     assert result["score"] == 0.0
     assert result["success"] is False
@@ -387,7 +397,6 @@ def test_main_writes_results_without_extra_stdout(monkeypatch, tmp_path, capsys)
     monkeypatch.setattr(inference, "API_BASE_URL", "https://mock-base.test/v1")
     monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
     monkeypatch.setattr(inference, "TASKS", ["easy-password-reset"])
-    monkeypatch.setattr(inference, "make_client", lambda: object())
     monkeypatch.setattr(
         inference,
         "run_task",
@@ -407,5 +416,3 @@ def test_main_writes_results_without_extra_stdout(monkeypatch, tmp_path, capsys)
         "average_score": 0.5,
         "results": [task_results["easy-password-reset"]],
     }
-
-

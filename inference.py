@@ -180,18 +180,25 @@ def emit_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def emit_step(step: int, action: str, reward: float, done: bool, error: str | None) -> None:
+def emit_step(
+    step: int,
+    task: str,
+    action: str,
+    reward: float,
+    done: bool,
+    error: str | None,
+) -> None:
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"[STEP] step={step} task={task} action={action} reward={reward:.2f} "
         f"done={_format_bool(done)} error={_format_error(error)}",
         flush=True,
     )
 
 
-def emit_end(success: bool, steps: int, score: float, rewards: list[float]) -> None:
+def emit_end(task: str, success: bool, steps: int, score: float, rewards: list[float]) -> None:
     rewards_text = ",".join(f"{reward:.2f}" for reward in rewards)
     print(
-        f"[END] success={_format_bool(success)} steps={steps} "
+        f"[END] task={task} success={_format_bool(success)} steps={steps} "
         f"score={score:.2f} rewards={rewards_text}",
         flush=True,
     )
@@ -316,6 +323,7 @@ def run_task(
     last_normalized_action: dict[str, Any] | None = None
     state: Any | None = None
     env: Any | None = None
+    emitted_step = False
 
     emit_start(task=task_id, env=BENCHMARK_NAME, model=MODEL_NAME)
 
@@ -354,11 +362,13 @@ def run_task(
                     error_message = step_error
                 emit_step(
                     step=step,
+                    task=task_id,
                     action=_format_action(action),
                     reward=reward,
                     done=bool(final_result.done),
                     error=step_error,
                 )
+                emitted_step = True
 
                 if final_result.done:
                     break
@@ -387,7 +397,16 @@ def run_task(
                 verbose,
             )
     finally:
-        emit_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        if not emitted_step and error_message is not None:
+            emit_step(
+                step=max(steps_taken, 1),
+                task=task_id,
+                action="null",
+                reward=0.0,
+                done=True,
+                error=error_message,
+            )
+        emit_end(task=task_id, success=success, steps=steps_taken, score=score, rewards=rewards)
 
     payload = {
         "task_id": task_id,

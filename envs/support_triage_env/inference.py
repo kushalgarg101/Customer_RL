@@ -304,7 +304,7 @@ def request_action(
 
 
 def run_task(
-    client: OpenAI, env_url: str, task_id: str, max_steps: int, verbose: bool = False
+    client: OpenAI | None, env_url: str, task_id: str, max_steps: int, verbose: bool = False
 ) -> dict[str, Any]:
     rewards: list[float] = []
     steps_taken = 0
@@ -320,6 +320,8 @@ def run_task(
     emit_start(task=task_id, env=BENCHMARK_NAME, model=MODEL_NAME)
 
     try:
+        if client is None:
+            client = make_client()
         with SupportTriageEnv(base_url=env_url).sync() as env:
             result = env.reset(task_id=task_id)
             difficulty = result.observation.task_difficulty
@@ -411,10 +413,9 @@ def run_task(
 
 def main() -> None:
     args = parse_args()
-    client = make_client()
 
     results = [
-        run_task(client, args.env_url, task_id, args.max_steps, verbose=args.verbose)
+        run_task(None, args.env_url, task_id, args.max_steps, verbose=args.verbose)
         for task_id in TASKS
     ]
     average = round(sum(item["score"] for item in results) / len(results), 4)
@@ -431,6 +432,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 

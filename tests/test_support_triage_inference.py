@@ -330,6 +330,31 @@ def test_run_task_preserves_partial_score_after_late_failure(monkeypatch, capsys
     assert result["success"] is False
     assert result["error"] == "late failure"
 
+def test_run_task_emits_start_and_end_when_client_init_fails(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
+    monkeypatch.setattr(
+        inference,
+        "make_client",
+        lambda: (_ for _ in ()).throw(RuntimeError("missing token")),
+    )
+
+    result = inference.run_task(
+        client=None,
+        env_url="http://localhost:8000",
+        task_id="easy-password-reset",
+        max_steps=3,
+    )
+
+    captured = capsys.readouterr()
+    assert [line for line in captured.out.strip().splitlines() if line] == [
+        "[START] task=easy-password-reset env=support_triage_env model=test-model",
+        "[END] success=false steps=0 score=0.00 rewards=",
+    ]
+    assert result["score"] == 0.0
+    assert result["success"] is False
+    assert result["error"] == "missing token"
+
+
 def test_main_writes_results_without_extra_stdout(monkeypatch, tmp_path, capsys) -> None:
     output_path = tmp_path / "results.json"
     task_results = {

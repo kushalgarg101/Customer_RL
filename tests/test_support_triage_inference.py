@@ -73,6 +73,21 @@ def test_load_dotenv_file_sets_missing_values_only(tmp_path, monkeypatch) -> Non
     assert os.environ["API_BASE_URL"] == "https://already-set.test/v1"
 
 
+def test_emit_structured_line_flushes_and_quotes_spaces(monkeypatch) -> None:
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_print(*args, **kwargs):
+        captured.append((args, kwargs))
+
+    monkeypatch.setattr("builtins.print", fake_print)
+
+    inference.emit_structured_line("START", task="support triage eval", total_tasks=3)
+
+    assert captured == [
+        (("[START] task=\"support triage eval\" total_tasks=3",), {"flush": True})
+    ]
+
+
 def test_run_task_returns_error_payload_on_request_failure(monkeypatch) -> None:
     class FakeSyncEnv:
         def __enter__(self):
@@ -115,7 +130,78 @@ def test_run_task_returns_error_payload_on_request_failure(monkeypatch) -> None:
         lambda client, observation: (_ for _ in ()).throw(ValueError("bad response")),
     )
 
-    result = inference.run_task(client=object(), env_url="http://localhost:8000", task_id="easy-password-reset", max_steps=3)
+    result = inference.run_task(
+        client=object(),
+        env_url="http://localhost:8000",
+        task_id="easy-password-reset",
+        max_steps=3,
+    )
 
     assert result["score"] == 0.0
     assert result["error"] == "bad response"
+
+
+def test_main_emits_structured_stdout_and_writes_results(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    output_path = tmp_path / "results.json"
+    tasks = ["easy-password-reset", "medium-shipping-refund"]
+    task_results = {
+        "easy-password-reset": {
+            "task_id": "easy-password-reset",
+            "difficulty": "easy",
+            "score": 0.5,
+            "steps": 2,
+        },
+        "medium-shipping-refund": {
+            "task_id": "medium-shipping-refund",
+            "difficulty": "medium",
+            "score": 1.0,
+            "steps": 4,
+            "error": "mock failure",
+        },
+    }
+
+    monkeypatch.setattr(
+        inference,
+        "parse_args",
+        lambda: SimpleNamespace(
+            env_url="http://localhost:8000",
+            output=str(output_path),
+            max_steps=8,
+            verbose=False,
+        ),
+    )
+    monkeypatch.setenv("API_BASE_URL", "https://mock-base.test/v1")
+    monkeypatch.setattr(inference, "make_client", lambda: object())
+    monkeypatch.setattr(inference, "model_name", lambda: "test-model")
+    monkeypatch.setattr(inference, "TASKS", tasks)
+    monkeypatch.setattr(
+        inference,
+        "run_task",
+        lambda client, env_url, task_id, max_steps, verbose: task_results[task_id],
+    )
+
+    inference.main()
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+    lines = [line for line in captured.out.strip().splitlines() if line]
+    assert lines == [
+        "[START] task=support_triage_eval model=test-model total_tasks=2",
+        "[STEP] step=1 task=easy-password-reset reward=0.5000 steps=2",
+        "[STEP] step=2 task=medium-shipping-refund reward=1.0000 steps=4",
+        "[END] task=support_triage_eval score=0.7500 steps=2",
+    ]
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload == {
+        "model": "test-model",
+        "api_base_url": "https://mock-base.test/v1",
+        "average_score": 0.75,
+        "results": [
+            task_results["easy-password-reset"],
+            task_results["medium-shipping-refund"],
+        ],
+    }

@@ -32,6 +32,7 @@ from support_triage_env.tasks import TASKS
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OUTPUT_PATH = Path("support_triage_baseline_results.json")
+STRUCTURED_TASK_NAME = "support_triage_eval"
 ACTION_ALIASES = {
     "action": "action_type",
     "type": "action_type",
@@ -131,6 +132,17 @@ def model_name() -> str:
     return os.environ.get("MODEL_NAME", "gpt-4o-mini")
 
 
+def emit_structured_line(tag: str, **fields: Any) -> None:
+    """Emit validator-readable progress to stdout."""
+    parts = [f"[{tag}]"]
+    for key, value in fields.items():
+        text = str(value)
+        if any(char.isspace() for char in text):
+            text = json.dumps(text, ensure_ascii=True)
+        parts.append(f"{key}={text}")
+    print(" ".join(parts), flush=True)
+
+
 def build_messages(observation: Any) -> list[dict[str, str]]:
     payload = {
         "task_id": observation.task_id,
@@ -160,7 +172,10 @@ def extract_json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
     decoder = json.JSONDecoder()
 
-    for candidate in (stripped, stripped.replace("```json", "").replace("```", "").strip()):
+    for candidate in (
+        stripped,
+        stripped.replace("```json", "").replace("```", "").strip(),
+    ):
         if not candidate:
             continue
         try:
@@ -255,22 +270,27 @@ def run_task(
                 last_raw_response = raw_response
                 last_normalized_action = normalized_action
                 if verbose:
-                    print(f"[{task_id}] raw model response: {raw_response}")
+                    print(f"[{task_id}] raw model response: {raw_response}", flush=True)
                     print(
                         f"[{task_id}] normalized action: "
-                        f"{json.dumps(normalized_action, ensure_ascii=False)}"
+                        f"{json.dumps(normalized_action, ensure_ascii=False)}",
+                        flush=True,
                     )
                 final_result = env.step(action)
             except Exception as exc:
                 error_message = str(exc)
                 if verbose:
-                    print(f"[{task_id}] error: {error_message}")
+                    print(f"[{task_id}] error: {error_message}", flush=True)
                     if last_raw_response:
-                        print(f"[{task_id}] last raw response: {last_raw_response}")
+                        print(
+                            f"[{task_id}] last raw response: {last_raw_response}",
+                            flush=True,
+                        )
                     if last_normalized_action:
                         print(
                             f"[{task_id}] last normalized action: "
-                            f"{json.dumps(last_normalized_action, ensure_ascii=False)}"
+                            f"{json.dumps(last_normalized_action, ensure_ascii=False)}",
+                            flush=True,
                         )
                 break
         state = env.state()
@@ -297,11 +317,29 @@ def run_task(
 def main() -> None:
     args = parse_args()
     client = make_client()
+    task_ids = list(TASKS)
 
-    results = [
-        run_task(client, args.env_url, task_id, args.max_steps, verbose=args.verbose)
-        for task_id in TASKS
-    ]
+    emit_structured_line(
+        "START",
+        task=STRUCTURED_TASK_NAME,
+        model=model_name(),
+        total_tasks=len(task_ids),
+    )
+
+    results = []
+    for index, task_id in enumerate(task_ids, start=1):
+        result = run_task(
+            client, args.env_url, task_id, args.max_steps, verbose=args.verbose
+        )
+        results.append(result)
+        emit_structured_line(
+            "STEP",
+            step=index,
+            task=task_id,
+            reward=f"{result['score']:.4f}",
+            steps=result["steps"],
+        )
+
     average = round(sum(item["score"] for item in results) / len(results), 4)
     payload = {
         "model": model_name(),
@@ -313,16 +351,25 @@ def main() -> None:
     output_path = Path(args.output)
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    print(f"Model: {payload['model']}")
-    for item in results:
-        print(
-            f"- {item['task_id']} ({item['difficulty']}): "
-            f"score={item['score']:.4f}, steps={item['steps']}"
-        )
-        if "error" in item:
-            print(f"  error: {item['error']}")
-    print(f"Average score: {average:.4f}")
-    print(f"Saved results to {output_path}")
+    emit_structured_line(
+        "END",
+        task=STRUCTURED_TASK_NAME,
+        score=f"{average:.4f}",
+        steps=len(results),
+    )
+
+    if args.verbose:
+        print(f"Model: {payload['model']}", flush=True)
+        for item in results:
+            print(
+                f"- {item['task_id']} ({item['difficulty']}): "
+                f"score={item['score']:.4f}, steps={item['steps']}",
+                flush=True,
+            )
+            if "error" in item:
+                print(f"  error: {item['error']}", flush=True)
+        print(f"Average score: {average:.4f}", flush=True)
+        print(f"Saved results to {output_path}", flush=True)
 
 
 if __name__ == "__main__":

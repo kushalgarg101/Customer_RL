@@ -13,26 +13,10 @@ from openai import OpenAI
 
 
 REPO_ROOT = Path(__file__).resolve().parent
-
-
-def _bootstrap_repo_imports() -> None:
-    """Allow running from repo root without requiring editable installs."""
-    for candidate in (REPO_ROOT / "envs", REPO_ROOT / "src"):
-        candidate_str = str(candidate)
-        if candidate_str not in sys.path:
-            sys.path.insert(0, candidate_str)
-
-
-_bootstrap_repo_imports()
-
-from support_triage_env import SupportAction, SupportTriageEnv
-from support_triage_env.prompts import SYSTEM_PROMPT
-from support_triage_env.tasks import TASKS
-
-
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_MODEL_NAME = "gpt-4o-mini"
 DEFAULT_OUTPUT_PATH = Path("support_triage_baseline_results.json")
-STRUCTURED_TASK_NAME = "support_triage_eval"
+BENCHMARK_NAME = "support_triage_env"
 ACTION_ALIASES = {
     "action": "action_type",
     "type": "action_type",
@@ -84,6 +68,21 @@ RESOLUTION_ALIASES = {
 }
 
 
+def _bootstrap_repo_imports() -> None:
+    """Allow running from repo root without requiring editable installs."""
+    for candidate in (REPO_ROOT / "envs", REPO_ROOT / "src"):
+        candidate_str = str(candidate)
+        if candidate_str not in sys.path:
+            sys.path.insert(0, candidate_str)
+
+
+_bootstrap_repo_imports()
+
+from support_triage_env import SupportAction, SupportTriageEnv
+from support_triage_env.prompts import SYSTEM_PROMPT
+from support_triage_env.tasks import TASKS
+
+
 def load_dotenv_file(path: Path | None = None) -> None:
     """Load simple KEY=VALUE entries from a repo-local .env file."""
     dotenv_path = path or (REPO_ROOT / ".env")
@@ -104,6 +103,12 @@ def load_dotenv_file(path: Path | None = None) -> None:
 
 load_dotenv_file()
 
+HF_TOKEN = (
+    os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+)
+API_BASE_URL = os.getenv("API_BASE_URL", DEFAULT_BASE_URL)
+MODEL_NAME = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -117,30 +122,79 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_client() -> OpenAI:
-    api_key = (
-        os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("API_KEY")
-        or os.environ.get("HF_TOKEN")
+    if not HF_TOKEN:
+        raise RuntimeError("Set HF_TOKEN, OPENAI_API_KEY, or API_KEY.")
+    return OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
+
+
+def debug_log(message: str, verbose: bool) -> None:
+    if verbose:
+        print(message, file=sys.stderr, flush=True)
+
+
+def _escape_log_text(text: str) -> str:
+    escaped: list[str] = []
+    for char in text:
+        if char == " ":
+            escaped.append("\\u0020")
+        elif char == "\n":
+            escaped.append("\\n")
+        elif char == "\r":
+            escaped.append("\\r")
+        elif char == "\t":
+            escaped.append("\\t")
+        elif char.isspace():
+            escaped.append(f"\\u{ord(char):04x}")
+        else:
+            escaped.append(char)
+    return "".join(escaped)
+
+
+def _format_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _format_error(message: str | None) -> str:
+    if not message:
+        return "null"
+    return _escape_log_text(message)
+
+
+def _format_action(action: SupportAction) -> str:
+    raw = json.dumps(action.model_dump(exclude_none=True, exclude={"metadata"}, exclude_defaults=True), separators=(",", ":"), ensure_ascii=True)
+    return _escape_log_text(raw)
+
+
+def _clamp_score(score: float) -> float:
+    return min(max(score, 0.0), 1.0)
+
+
+def _extract_step_error(observation: Any) -> str | None:
+    validation_errors = getattr(observation, "validation_errors", None) or []
+    if not validation_errors:
+        return None
+    return "; ".join(str(item) for item in validation_errors)
+
+
+def emit_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def emit_step(step: int, action: str, reward: float, done: bool, error: str | None) -> None:
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"done={_format_bool(done)} error={_format_error(error)}",
+        flush=True,
     )
-    if not api_key:
-        raise RuntimeError("Set OPENAI_API_KEY, API_KEY, or HF_TOKEN.")
-    base_url = os.environ.get("API_BASE_URL", DEFAULT_BASE_URL)
-    return OpenAI(api_key=api_key, base_url=base_url)
 
 
-def model_name() -> str:
-    return os.environ.get("MODEL_NAME", "gpt-4o-mini")
-
-
-def emit_structured_line(tag: str, **fields: Any) -> None:
-    """Emit validator-readable progress to stdout."""
-    parts = [f"[{tag}]"]
-    for key, value in fields.items():
-        text = str(value)
-        if any(char.isspace() for char in text):
-            text = json.dumps(text, ensure_ascii=True)
-        parts.append(f"{key}={text}")
-    print(" ".join(parts), flush=True)
+def emit_end(success: bool, steps: int, score: float, rewards: list[float]) -> None:
+    rewards_text = ",".join(f"{reward:.2f}" for reward in rewards)
+    print(
+        f"[END] success={_format_bool(success)} steps={steps} "
+        f"score={score:.2f} rewards={rewards_text}",
+        flush=True,
+    )
 
 
 def build_messages(observation: Any) -> list[dict[str, str]]:
@@ -226,9 +280,7 @@ def normalize_action_payload(data: dict[str, Any]) -> dict[str, Any]:
             normalized["queue"].strip().lower(),
         )
 
-    if "resolution_code" in normalized and isinstance(
-        normalized["resolution_code"], str
-    ):
+    if "resolution_code" in normalized and isinstance(normalized["resolution_code"], str):
         normalized["resolution_code"] = RESOLUTION_ALIASES.get(
             normalized["resolution_code"].strip().lower(),
             normalized["resolution_code"].strip().lower(),
@@ -241,7 +293,7 @@ def request_action(
     client: OpenAI, observation: Any
 ) -> tuple[SupportAction, str, dict[str, Any]]:
     response = client.chat.completions.create(
-        model=model_name(),
+        model=MODEL_NAME,
         temperature=0,
         messages=build_messages(observation),
     )
@@ -254,96 +306,121 @@ def request_action(
 def run_task(
     client: OpenAI, env_url: str, task_id: str, max_steps: int, verbose: bool = False
 ) -> dict[str, Any]:
-    with SupportTriageEnv(base_url=env_url).sync() as env:
-        result = env.reset(task_id=task_id)
-        final_result = result
-        error_message: str | None = None
-        last_raw_response: str | None = None
-        last_normalized_action: dict[str, Any] | None = None
-        for _ in range(max_steps):
-            if final_result.done:
-                break
-            try:
+    rewards: list[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
+    error_message: str | None = None
+    difficulty: str | None = None
+    last_raw_response: str | None = None
+    last_normalized_action: dict[str, Any] | None = None
+    state: Any | None = None
+    env: Any | None = None
+
+    emit_start(task=task_id, env=BENCHMARK_NAME, model=MODEL_NAME)
+
+    try:
+        with SupportTriageEnv(base_url=env_url).sync() as env:
+            result = env.reset(task_id=task_id)
+            difficulty = result.observation.task_difficulty
+            final_result = result
+
+            for step in range(1, max_steps + 1):
+                if final_result.done:
+                    break
+
                 action, raw_response, normalized_action = request_action(
                     client, final_result.observation
                 )
                 last_raw_response = raw_response
                 last_normalized_action = normalized_action
-                if verbose:
-                    print(f"[{task_id}] raw model response: {raw_response}", flush=True)
-                    print(
-                        f"[{task_id}] normalized action: "
-                        f"{json.dumps(normalized_action, ensure_ascii=False)}",
-                        flush=True,
-                    )
+                debug_log(f"[{task_id}] raw model response: {raw_response}", verbose)
+                debug_log(
+                    "[{}] normalized action: {}".format(
+                        task_id,
+                        json.dumps(normalized_action, ensure_ascii=False),
+                    ),
+                    verbose,
+                )
+
                 final_result = env.step(action)
-            except Exception as exc:
-                error_message = str(exc)
-                if verbose:
-                    print(f"[{task_id}] error: {error_message}", flush=True)
-                    if last_raw_response:
-                        print(
-                            f"[{task_id}] last raw response: {last_raw_response}",
-                            flush=True,
-                        )
-                    if last_normalized_action:
-                        print(
-                            f"[{task_id}] last normalized action: "
-                            f"{json.dumps(last_normalized_action, ensure_ascii=False)}",
-                            flush=True,
-                        )
-                break
-        state = env.state()
-        payload = {
-            "task_id": task_id,
-            "difficulty": result.observation.task_difficulty,
-            "score": 0.0 if error_message else state.partial_scores.get("episode", 0.0),
-            "steps": state.step_count,
-            "cumulative_reward": state.cumulative_reward,
-            "classification": state.current_classification,
-            "priority": state.current_priority,
-            "queue": state.current_queue,
-            "resolution": state.current_resolution,
-        }
-        if error_message:
-            payload["error"] = error_message
+                reward = float(final_result.reward or 0.0)
+                rewards.append(reward)
+                steps_taken = step
+                step_error = _extract_step_error(final_result.observation)
+                if step_error:
+                    error_message = step_error
+                emit_step(
+                    step=step,
+                    action=_format_action(action),
+                    reward=reward,
+                    done=bool(final_result.done),
+                    error=step_error,
+                )
+
+                if final_result.done:
+                    break
+
+            state = env.state()
+            score = _clamp_score(float(state.partial_scores.get("episode", 0.0)))
+            success = score >= 1.0 and error_message is None
+    except Exception as exc:
+        if error_message is None:
+            error_message = str(exc)
+        if state is None and env is not None:
+            try:
+                state = env.state()
+                score = _clamp_score(float(state.partial_scores.get("episode", 0.0)))
+            except Exception:
+                state = None
+        debug_log(f"[{task_id}] error: {error_message}", verbose)
         if last_raw_response:
-            payload["last_raw_response"] = last_raw_response
+            debug_log(f"[{task_id}] last raw response: {last_raw_response}", verbose)
         if last_normalized_action:
-            payload["last_normalized_action"] = last_normalized_action
-        return payload
+            debug_log(
+                "[{}] last normalized action: {}".format(
+                    task_id,
+                    json.dumps(last_normalized_action, ensure_ascii=False),
+                ),
+                verbose,
+            )
+    finally:
+        emit_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    payload = {
+        "task_id": task_id,
+        "difficulty": difficulty,
+        "score": score,
+        "steps": steps_taken,
+        "rewards": rewards,
+        "cumulative_reward": getattr(state, "cumulative_reward", 0.0),
+        "classification": getattr(state, "current_classification", None),
+        "priority": getattr(state, "current_priority", None),
+        "queue": getattr(state, "current_queue", None),
+        "resolution": getattr(state, "current_resolution", None),
+        "success": success,
+    }
+    if error_message:
+        payload["error"] = error_message
+    if last_raw_response:
+        payload["last_raw_response"] = last_raw_response
+    if last_normalized_action:
+        payload["last_normalized_action"] = last_normalized_action
+    return payload
 
 
 def main() -> None:
     args = parse_args()
     client = make_client()
-    task_ids = list(TASKS)
 
-    emit_structured_line(
-        "START",
-        task=STRUCTURED_TASK_NAME,
-        model=model_name(),
-        total_tasks=len(task_ids),
-    )
-
-    results = []
-    for index, task_id in enumerate(task_ids, start=1):
-        result = run_task(
-            client, args.env_url, task_id, args.max_steps, verbose=args.verbose
-        )
-        results.append(result)
-        emit_structured_line(
-            "STEP",
-            step=index,
-            task=task_id,
-            reward=f"{result['score']:.4f}",
-            steps=result["steps"],
-        )
-
+    results = [
+        run_task(client, args.env_url, task_id, args.max_steps, verbose=args.verbose)
+        for task_id in TASKS
+    ]
     average = round(sum(item["score"] for item in results) / len(results), 4)
     payload = {
-        "model": model_name(),
-        "api_base_url": os.environ.get("API_BASE_URL", DEFAULT_BASE_URL),
+        "model": MODEL_NAME,
+        "api_base_url": API_BASE_URL,
         "average_score": average,
         "results": results,
     }
@@ -351,26 +428,10 @@ def main() -> None:
     output_path = Path(args.output)
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    emit_structured_line(
-        "END",
-        task=STRUCTURED_TASK_NAME,
-        score=f"{average:.4f}",
-        steps=len(results),
-    )
-
-    if args.verbose:
-        print(f"Model: {payload['model']}", flush=True)
-        for item in results:
-            print(
-                f"- {item['task_id']} ({item['difficulty']}): "
-                f"score={item['score']:.4f}, steps={item['steps']}",
-                flush=True,
-            )
-            if "error" in item:
-                print(f"  error: {item['error']}", flush=True)
-        print(f"Average score: {average:.4f}", flush=True)
-        print(f"Saved results to {output_path}", flush=True)
-
 
 if __name__ == "__main__":
     main()
+
+
+
+

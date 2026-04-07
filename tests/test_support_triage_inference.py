@@ -59,36 +59,142 @@ def test_normalize_action_payload_maps_queue_and_resolution_aliases() -> None:
 def test_load_dotenv_file_sets_missing_values_only(tmp_path, monkeypatch) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
-        "MODEL_NAME=gemini-2.5-flash\nOPENAI_API_KEY=test-key\nAPI_BASE_URL=https://example.test/v1\n",
+        "MODEL_NAME=gemini-2.5-flash\nHF_TOKEN=test-key\nAPI_BASE_URL=https://example.test/v1\n",
         encoding="utf-8",
     )
     monkeypatch.delenv("MODEL_NAME", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setenv("API_BASE_URL", "https://already-set.test/v1")
 
     inference.load_dotenv_file(dotenv_path)
 
     assert os.environ["MODEL_NAME"] == "gemini-2.5-flash"
-    assert os.environ["OPENAI_API_KEY"] == "test-key"
+    assert os.environ["HF_TOKEN"] == "test-key"
     assert os.environ["API_BASE_URL"] == "https://already-set.test/v1"
 
 
-def test_emit_structured_line_flushes_and_quotes_spaces(monkeypatch) -> None:
-    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+def test_emit_functions_match_sample_contract(capsys) -> None:
+    inference.emit_start("easy-password-reset", inference.BENCHMARK_NAME, "test-model")
+    inference.emit_step(
+        step=1,
+        action='{"action_type":"inspect_ticket"}',
+        reward=0.05,
+        done=False,
+        error=None,
+    )
+    inference.emit_end(success=True, steps=1, score=1.0, rewards=[0.05])
 
-    def fake_print(*args, **kwargs):
-        captured.append((args, kwargs))
-
-    monkeypatch.setattr("builtins.print", fake_print)
-
-    inference.emit_structured_line("START", task="support triage eval", total_tasks=3)
-
-    assert captured == [
-        (("[START] task=\"support triage eval\" total_tasks=3",), {"flush": True})
+    lines = [line for line in capsys.readouterr().out.strip().splitlines() if line]
+    assert lines == [
+        "[START] task=easy-password-reset env=support_triage_env model=test-model",
+        "[STEP] step=1 action={\"action_type\":\"inspect_ticket\"} reward=0.05 done=false error=null",
+        "[END] success=true steps=1 score=1.00 rewards=0.05",
     ]
 
 
-def test_run_task_returns_error_payload_on_request_failure(monkeypatch) -> None:
+def test_format_action_escapes_whitespace() -> None:
+    action = inference.SupportAction(
+        action_type="draft_reply",
+        reply_text="Hello there\ncustomer",
+    )
+    rendered = inference._format_action(action)
+    assert " " not in rendered
+    assert "\\n" in rendered
+    assert "reply_text" in rendered
+
+
+def test_run_task_emits_per_step_structured_lines(monkeypatch, capsys) -> None:
+    class FakeSyncEnv:
+        def __init__(self):
+            self._steps = [
+                SimpleNamespace(
+                    reward=0.05,
+                    done=False,
+                    observation=SimpleNamespace(validation_errors=[]),
+                ),
+                SimpleNamespace(
+                    reward=0.95,
+                    done=True,
+                    observation=SimpleNamespace(validation_errors=[]),
+                ),
+            ]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def reset(self, task_id: str):
+            return SimpleNamespace(
+                done=False,
+                observation=SimpleNamespace(task_difficulty="easy", validation_errors=[]),
+            )
+
+        def step(self, action):
+            return self._steps.pop(0)
+
+        def state(self):
+            return SimpleNamespace(
+                partial_scores={"episode": 1.0},
+                cumulative_reward=1.0,
+                current_classification="account_access",
+                current_priority="medium",
+                current_queue="billing_queue",
+                current_resolution="resolved",
+            )
+
+    class FakeEnvFactory:
+        def __init__(self, base_url: str):
+            self.base_url = base_url
+
+        def sync(self):
+            return FakeSyncEnv()
+
+    actions = iter(
+        [
+            (
+                inference.SupportAction(action_type="inspect_ticket"),
+                '{"action_type":"inspect_ticket"}',
+                {"action_type": "inspect_ticket"},
+            ),
+            (
+                inference.SupportAction(
+                    action_type="resolve_ticket", resolution_code="resolved"
+                ),
+                '{"action_type":"resolve_ticket","resolution_code":"resolved"}',
+                {
+                    "action_type": "resolve_ticket",
+                    "resolution_code": "resolved",
+                },
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(inference, "SupportTriageEnv", FakeEnvFactory)
+    monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
+    monkeypatch.setattr(inference, "request_action", lambda client, observation: next(actions))
+
+    result = inference.run_task(
+        client=object(),
+        env_url="http://localhost:8000",
+        task_id="easy-password-reset",
+        max_steps=3,
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert [line for line in captured.out.strip().splitlines() if line] == [
+        "[START] task=easy-password-reset env=support_triage_env model=test-model",
+        "[STEP] step=1 action={\"action_type\":\"inspect_ticket\"} reward=0.05 done=false error=null",
+        "[STEP] step=2 action={\"action_type\":\"resolve_ticket\",\"resolution_code\":\"resolved\"} reward=0.95 done=true error=null",
+        "[END] success=true steps=2 score=1.00 rewards=0.05,0.95",
+    ]
+    assert result["score"] == 1.0
+    assert result["success"] is True
+
+
+def test_run_task_always_emits_end_on_failure(monkeypatch, capsys) -> None:
     class FakeSyncEnv:
         def __enter__(self):
             return self
@@ -99,16 +205,12 @@ def test_run_task_returns_error_payload_on_request_failure(monkeypatch) -> None:
         def reset(self, task_id: str):
             return SimpleNamespace(
                 done=False,
-                observation=SimpleNamespace(task_difficulty="easy"),
+                observation=SimpleNamespace(task_difficulty="easy", validation_errors=[]),
             )
-
-        def step(self, action):
-            raise AssertionError("step should not be reached when request_action fails")
 
         def state(self):
             return SimpleNamespace(
-                partial_scores={"episode": 0.75},
-                step_count=0,
+                partial_scores={"episode": 0.0},
                 cumulative_reward=0.0,
                 current_classification=None,
                 current_priority=None,
@@ -124,6 +226,7 @@ def test_run_task_returns_error_payload_on_request_failure(monkeypatch) -> None:
             return FakeSyncEnv()
 
     monkeypatch.setattr(inference, "SupportTriageEnv", FakeEnvFactory)
+    monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
     monkeypatch.setattr(
         inference,
         "request_action",
@@ -137,29 +240,112 @@ def test_run_task_returns_error_payload_on_request_failure(monkeypatch) -> None:
         max_steps=3,
     )
 
+    captured = capsys.readouterr()
+    assert [line for line in captured.out.strip().splitlines() if line] == [
+        "[START] task=easy-password-reset env=support_triage_env model=test-model",
+        "[END] success=false steps=0 score=0.00 rewards=",
+    ]
     assert result["score"] == 0.0
+    assert result["success"] is False
     assert result["error"] == "bad response"
 
 
-def test_main_emits_structured_stdout_and_writes_results(
-    monkeypatch, tmp_path, capsys
-) -> None:
+def test_run_task_preserves_partial_score_after_late_failure(monkeypatch, capsys) -> None:
+    class FakeSyncEnv:
+        def __init__(self):
+            self._steps = [
+                SimpleNamespace(
+                    reward=0.25,
+                    done=False,
+                    observation=SimpleNamespace(validation_errors=[]),
+                )
+            ]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def reset(self, task_id: str):
+            return SimpleNamespace(
+                done=False,
+                observation=SimpleNamespace(task_difficulty="easy", validation_errors=[]),
+            )
+
+        def step(self, action):
+            return self._steps.pop(0)
+
+        def state(self):
+            return SimpleNamespace(
+                partial_scores={"episode": 0.25},
+                cumulative_reward=0.25,
+                current_classification="account_access",
+                current_priority=None,
+                current_queue=None,
+                current_resolution=None,
+            )
+
+    class FakeEnvFactory:
+        def __init__(self, base_url: str):
+            self.base_url = base_url
+
+        def sync(self):
+            return FakeSyncEnv()
+
+    actions = iter(
+        [
+            (
+                inference.SupportAction(action_type="inspect_ticket"),
+                '{"action_type":"inspect_ticket"}',
+                {"action_type": "inspect_ticket"},
+            )
+        ]
+    )
+
+    def fake_request_action(client, observation):
+        try:
+            return next(actions)
+        except StopIteration as exc:
+            raise ValueError("late failure") from exc
+
+    monkeypatch.setattr(inference, "SupportTriageEnv", FakeEnvFactory)
+    monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
+    monkeypatch.setattr(inference, "request_action", fake_request_action)
+
+    result = inference.run_task(
+        client=object(),
+        env_url="http://localhost:8000",
+        task_id="easy-password-reset",
+        max_steps=3,
+    )
+
+    captured = capsys.readouterr()
+    assert [line for line in captured.out.strip().splitlines() if line] == [
+        "[START] task=easy-password-reset env=support_triage_env model=test-model",
+        "[STEP] step=1 action={\"action_type\":\"inspect_ticket\"} reward=0.25 done=false error=null",
+        "[END] success=false steps=1 score=0.25 rewards=0.25",
+    ]
+    assert result["score"] == 0.25
+    assert result["success"] is False
+    assert result["error"] == "late failure"
+
+def test_main_writes_results_without_extra_stdout(monkeypatch, tmp_path, capsys) -> None:
     output_path = tmp_path / "results.json"
-    tasks = ["easy-password-reset", "medium-shipping-refund"]
     task_results = {
         "easy-password-reset": {
             "task_id": "easy-password-reset",
             "difficulty": "easy",
             "score": 0.5,
             "steps": 2,
-        },
-        "medium-shipping-refund": {
-            "task_id": "medium-shipping-refund",
-            "difficulty": "medium",
-            "score": 1.0,
-            "steps": 4,
-            "error": "mock failure",
-        },
+            "rewards": [0.05, 0.45],
+            "cumulative_reward": 0.5,
+            "classification": None,
+            "priority": None,
+            "queue": None,
+            "resolution": None,
+            "success": False,
+        }
     }
 
     monkeypatch.setattr(
@@ -172,10 +358,11 @@ def test_main_emits_structured_stdout_and_writes_results(
             verbose=False,
         ),
     )
-    monkeypatch.setenv("API_BASE_URL", "https://mock-base.test/v1")
+    monkeypatch.setattr(inference, "HF_TOKEN", "test-token")
+    monkeypatch.setattr(inference, "API_BASE_URL", "https://mock-base.test/v1")
+    monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
+    monkeypatch.setattr(inference, "TASKS", ["easy-password-reset"])
     monkeypatch.setattr(inference, "make_client", lambda: object())
-    monkeypatch.setattr(inference, "model_name", lambda: "test-model")
-    monkeypatch.setattr(inference, "TASKS", tasks)
     monkeypatch.setattr(
         inference,
         "run_task",
@@ -185,23 +372,15 @@ def test_main_emits_structured_stdout_and_writes_results(
     inference.main()
 
     captured = capsys.readouterr()
+    assert captured.out == ""
     assert captured.err == ""
-
-    lines = [line for line in captured.out.strip().splitlines() if line]
-    assert lines == [
-        "[START] task=support_triage_eval model=test-model total_tasks=2",
-        "[STEP] step=1 task=easy-password-reset reward=0.5000 steps=2",
-        "[STEP] step=2 task=medium-shipping-refund reward=1.0000 steps=4",
-        "[END] task=support_triage_eval score=0.7500 steps=2",
-    ]
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload == {
         "model": "test-model",
         "api_base_url": "https://mock-base.test/v1",
-        "average_score": 0.75,
-        "results": [
-            task_results["easy-password-reset"],
-            task_results["medium-shipping-refund"],
-        ],
+        "average_score": 0.5,
+        "results": [task_results["easy-password-reset"]],
     }
+
+

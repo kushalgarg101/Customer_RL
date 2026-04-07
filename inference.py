@@ -103,8 +103,8 @@ def load_dotenv_file(path: Path | None = None) -> None:
 
 load_dotenv_file()
 
-HF_TOKEN = (
-    os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+API_TOKEN = (
+    os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 )
 API_BASE_URL = os.getenv("API_BASE_URL", DEFAULT_BASE_URL)
 MODEL_NAME = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
@@ -122,9 +122,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_client() -> OpenAI:
-    if not HF_TOKEN:
-        raise RuntimeError("Set HF_TOKEN, OPENAI_API_KEY, or API_KEY.")
-    return OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
+    if not API_TOKEN:
+        raise RuntimeError("Set OPENAI_API_KEY, API_KEY, or HF_TOKEN.")
+    return OpenAI(api_key=API_TOKEN, base_url=API_BASE_URL)
 
 
 def debug_log(message: str, verbose: bool) -> None:
@@ -161,7 +161,15 @@ def _format_error(message: str | None) -> str:
 
 
 def _format_action(action: SupportAction) -> str:
-    raw = json.dumps(action.model_dump(exclude_none=True, exclude={"metadata"}, exclude_defaults=True), separators=(",", ":"), ensure_ascii=True)
+    raw = json.dumps(
+        action.model_dump(
+            exclude_none=True,
+            exclude={"metadata"},
+            exclude_defaults=True,
+        ),
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
     return _escape_log_text(raw)
 
 
@@ -195,7 +203,9 @@ def emit_step(
     )
 
 
-def emit_end(task: str, success: bool, steps: int, score: float, rewards: list[float]) -> None:
+def emit_end(
+    task: str, success: bool, steps: int, score: float, rewards: list[float]
+) -> None:
     rewards_text = ",".join(f"{reward:.2f}" for reward in rewards)
     print(
         f"[END] task={task} success={_format_bool(success)} steps={steps} "
@@ -272,7 +282,8 @@ def normalize_action_payload(data: dict[str, Any]) -> dict[str, Any]:
 
     if "classification" in normalized and isinstance(normalized["classification"], str):
         normalized["classification"] = CLASSIFICATION_ALIASES.get(
-            normalized["classification"].strip(), normalized["classification"].strip()
+            normalized["classification"].strip(),
+            normalized["classification"].strip(),
         )
 
     if "priority" in normalized and isinstance(normalized["priority"], str):
@@ -287,7 +298,9 @@ def normalize_action_payload(data: dict[str, Any]) -> dict[str, Any]:
             normalized["queue"].strip().lower(),
         )
 
-    if "resolution_code" in normalized and isinstance(normalized["resolution_code"], str):
+    if "resolution_code" in normalized and isinstance(
+        normalized["resolution_code"], str
+    ):
         normalized["resolution_code"] = RESOLUTION_ALIASES.get(
             normalized["resolution_code"].strip().lower(),
             normalized["resolution_code"].strip().lower(),
@@ -311,7 +324,11 @@ def request_action(
 
 
 def run_task(
-    client: OpenAI | None, env_url: str, task_id: str, max_steps: int, verbose: bool = False
+    client: OpenAI | None,
+    env_url: str,
+    task_id: str,
+    max_steps: int,
+    verbose: bool = False,
 ) -> dict[str, Any]:
     rewards: list[float] = []
     steps_taken = 0
@@ -406,7 +423,13 @@ def run_task(
                 done=True,
                 error=error_message,
             )
-        emit_end(task=task_id, success=success, steps=steps_taken, score=score, rewards=rewards)
+        emit_end(
+            task=task_id,
+            success=success,
+            steps=steps_taken,
+            score=score,
+            rewards=rewards,
+        )
 
     payload = {
         "task_id": task_id,
@@ -451,8 +474,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-
-

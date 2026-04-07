@@ -29,7 +29,7 @@ def test_extract_json_object_raises_on_missing_json() -> None:
         inference.extract_json_object("no structured action here")
     except ValueError as exc:
         assert "valid JSON object" in str(exc)
-    else:  # pragma: no cover
+    else:
         raise AssertionError("Expected ValueError for missing JSON object")
 
 
@@ -59,17 +59,17 @@ def test_normalize_action_payload_maps_queue_and_resolution_aliases() -> None:
 def test_load_dotenv_file_sets_missing_values_only(tmp_path, monkeypatch) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
-        "MODEL_NAME=gemini-2.5-flash\nHF_TOKEN=test-key\nAPI_BASE_URL=https://example.test/v1\n",
+        "MODEL_NAME=gemini-2.5-flash\nOPENAI_API_KEY=test-key\nAPI_BASE_URL=https://example.test/v1\n",
         encoding="utf-8",
     )
     monkeypatch.delenv("MODEL_NAME", raising=False)
-    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("API_BASE_URL", "https://already-set.test/v1")
 
     inference.load_dotenv_file(dotenv_path)
 
     assert os.environ["MODEL_NAME"] == "gemini-2.5-flash"
-    assert os.environ["HF_TOKEN"] == "test-key"
+    assert os.environ["OPENAI_API_KEY"] == "test-key"
     assert os.environ["API_BASE_URL"] == "https://already-set.test/v1"
 
 
@@ -180,7 +180,9 @@ def test_run_task_emits_per_step_structured_lines(monkeypatch, capsys) -> None:
 
     monkeypatch.setattr(inference, "SupportTriageEnv", FakeEnvFactory)
     monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
-    monkeypatch.setattr(inference, "request_action", lambda client, observation: next(actions))
+    monkeypatch.setattr(
+        inference, "request_action", lambda client, observation: next(actions)
+    )
 
     result = inference.run_task(
         client=object(),
@@ -201,7 +203,9 @@ def test_run_task_emits_per_step_structured_lines(monkeypatch, capsys) -> None:
     assert result["success"] is True
 
 
-def test_run_task_emits_fallback_step_on_failure_before_env_step(monkeypatch, capsys) -> None:
+def test_run_task_emits_fallback_step_on_failure_before_env_step(
+    monkeypatch, capsys
+) -> None:
     class FakeSyncEnv:
         def __enter__(self):
             return self
@@ -258,7 +262,9 @@ def test_run_task_emits_fallback_step_on_failure_before_env_step(monkeypatch, ca
     assert result["error"] == "bad response"
 
 
-def test_run_task_preserves_partial_score_after_late_failure(monkeypatch, capsys) -> None:
+def test_run_task_preserves_partial_score_after_late_failure(
+    monkeypatch, capsys
+) -> None:
     class FakeSyncEnv:
         def __init__(self):
             self._steps = [
@@ -339,7 +345,9 @@ def test_run_task_preserves_partial_score_after_late_failure(monkeypatch, capsys
     assert result["error"] == "late failure"
 
 
-def test_run_task_emits_start_step_and_end_when_client_init_fails(monkeypatch, capsys) -> None:
+def test_run_task_emits_start_step_and_end_when_client_init_fails(
+    monkeypatch, capsys
+) -> None:
     monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
     monkeypatch.setattr(
         inference,
@@ -365,7 +373,9 @@ def test_run_task_emits_start_step_and_end_when_client_init_fails(monkeypatch, c
     assert result["error"] == "missing token"
 
 
-def test_main_writes_results_without_extra_stdout(monkeypatch, tmp_path, capsys) -> None:
+def test_main_writes_results_without_extra_stdout(
+    monkeypatch, tmp_path, capsys
+) -> None:
     output_path = tmp_path / "results.json"
     task_results = {
         "easy-password-reset": {
@@ -393,7 +403,7 @@ def test_main_writes_results_without_extra_stdout(monkeypatch, tmp_path, capsys)
             verbose=False,
         ),
     )
-    monkeypatch.setattr(inference, "HF_TOKEN", "test-token")
+    monkeypatch.setattr(inference, "API_TOKEN", "test-token")
     monkeypatch.setattr(inference, "API_BASE_URL", "https://mock-base.test/v1")
     monkeypatch.setattr(inference, "MODEL_NAME", "test-model")
     monkeypatch.setattr(inference, "TASKS", ["easy-password-reset"])

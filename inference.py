@@ -79,6 +79,7 @@ def _bootstrap_repo_imports() -> None:
 _bootstrap_repo_imports()
 
 from support_triage_env import SupportAction, SupportTriageEnv
+from support_triage_env.graders import STRICT_SCORE_EPSILON
 from support_triage_env.prompts import SYSTEM_PROMPT
 from support_triage_env.tasks import TASKS
 
@@ -177,6 +178,15 @@ def _clamp_score(score: float) -> float:
     return min(max(score, 0.0), 1.0)
 
 
+def _strict_task_score(score: float) -> float:
+    bounded = round(_clamp_score(score), 4)
+    if bounded <= 0.0:
+        return STRICT_SCORE_EPSILON
+    if bounded >= 1.0:
+        return round(1.0 - STRICT_SCORE_EPSILON, 4)
+    return bounded
+
+
 def _extract_step_error(observation: Any) -> str | None:
     validation_errors = getattr(observation, "validation_errors", None) or []
     if not validation_errors:
@@ -209,7 +219,7 @@ def emit_end(
     rewards_text = ",".join(f"{reward:.2f}" for reward in rewards)
     print(
         f"[END] task={task} success={_format_bool(success)} steps={steps} "
-        f"score={score:.2f} rewards={rewards_text}",
+        f"score={score:.4f} rewards={rewards_text}",
         flush=True,
     )
 
@@ -391,15 +401,15 @@ def run_task(
                     break
 
             state = env.state()
-            score = _clamp_score(float(state.partial_scores.get("episode", 0.0)))
-            success = score >= 1.0 and error_message is None
+            score = _strict_task_score(float(state.partial_scores.get("episode", 0.0)))
+            success = score >= round(1.0 - STRICT_SCORE_EPSILON, 4) and error_message is None
     except Exception as exc:
         if error_message is None:
             error_message = str(exc)
         if state is None and env is not None:
             try:
                 state = env.state()
-                score = _clamp_score(float(state.partial_scores.get("episode", 0.0)))
+                score = _strict_task_score(float(state.partial_scores.get("episode", 0.0)))
             except Exception:
                 state = None
         debug_log(f"[{task_id}] error: {error_message}", verbose)
@@ -427,14 +437,14 @@ def run_task(
             task=task_id,
             success=success,
             steps=steps_taken,
-            score=score,
+            score=_strict_task_score(score),
             rewards=rewards,
         )
 
     payload = {
         "task_id": task_id,
         "difficulty": difficulty,
-        "score": score,
+        "score": _strict_task_score(score),
         "steps": steps_taken,
         "rewards": rewards,
         "cumulative_reward": getattr(state, "cumulative_reward", 0.0),

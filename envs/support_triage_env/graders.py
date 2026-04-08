@@ -15,6 +15,7 @@ FINAL_SCORE_WEIGHTS = {
     "reply": 0.30,
     "resolution": 0.15,
 }
+STRICT_SCORE_EPSILON = 0.0001
 
 
 def _normalize(text: str) -> str:
@@ -26,22 +27,33 @@ def _contains_any(text: str, phrases: tuple[str, ...]) -> bool:
     return any(_normalize(phrase) in normalized for phrase in phrases)
 
 
+def _to_open_interval(score: float) -> float:
+    score = round(score, 4)
+    if score <= 0.0:
+        return STRICT_SCORE_EPSILON
+    if score >= 1.0:
+        return round(1.0 - STRICT_SCORE_EPSILON, 4)
+    return score
+
+
 def grade_classification(state: SupportState, task: SupportTask) -> float:
-    return 1.0 if state.current_classification == task.classification else 0.0
+    return _to_open_interval(
+        1.0 if state.current_classification == task.classification else 0.0
+    )
 
 
 def grade_priority(state: SupportState, task: SupportTask) -> float:
-    return 1.0 if state.current_priority == task.priority else 0.0
+    return _to_open_interval(1.0 if state.current_priority == task.priority else 0.0)
 
 
 def grade_queue(state: SupportState, task: SupportTask) -> float:
-    return 1.0 if state.current_queue == task.queue else 0.0
+    return _to_open_interval(1.0 if state.current_queue == task.queue else 0.0)
 
 
 def grade_reply(state: SupportState, task: SupportTask) -> float:
     reply = state.current_reply.strip()
     if not reply:
-        return 0.0
+        return _to_open_interval(0.0)
 
     concept_hits = 0
     for phrases in task.required_reply_concepts.values():
@@ -57,11 +69,13 @@ def grade_reply(state: SupportState, task: SupportTask) -> float:
     if any(_contains_any(reply, (phrase,)) for phrase in task.forbidden_reply_phrases):
         score -= 0.3
 
-    return max(0.0, min(1.0, round(score, 4)))
+    return _to_open_interval(max(0.0, min(1.0, score)))
 
 
 def grade_resolution(state: SupportState, task: SupportTask) -> float:
-    return 1.0 if state.current_resolution == task.resolution_code else 0.0
+    return _to_open_interval(
+        1.0 if state.current_resolution == task.resolution_code else 0.0
+    )
 
 
 def grade_episode(state: SupportState, task: SupportTask) -> float:
@@ -73,7 +87,7 @@ def grade_episode(state: SupportState, task: SupportTask) -> float:
         "resolution": grade_resolution(state, task),
     }
     total = sum(scores[name] * weight for name, weight in FINAL_SCORE_WEIGHTS.items())
-    return round(max(0.0, min(1.0, total)), 4)
+    return _to_open_interval(max(0.0, min(1.0, total)))
 
 
 def compute_partial_scores(state: SupportState, task: SupportTask) -> dict[str, float]:

@@ -35,7 +35,7 @@ The benchmark ships with 3 deterministic tasks:
 - Medium: delayed shipment with refund expectations
 - Hard: enterprise outage with SLA and billing risk
 
-Each task has a deterministic grader with scores in `[0.0, 1.0]`.
+Each task has a deterministic grader with scores constrained to the open interval `(0.0, 1.0)` for validator compatibility.
 
 ## Action Space
 
@@ -157,7 +157,7 @@ Credential lookup order:
 - `API_KEY`
 - `HF_TOKEN`
 
-The runner also auto-loads a repo-root `.env` file if present
+The runner also auto-loads a repo-root `.env` file if present, so you can keep your local model configuration in one place instead of re-exporting it in every shell.
 
 The runner is intentionally tolerant of provider output and will:
 
@@ -196,9 +196,11 @@ Deployed Space:
 
 ## Expected Baseline Output
 
-`inference.py` prints per-task scores and an average score.
+`inference.py` prints per-task scores and an average score. Task scores are reported strictly inside `(0.0, 1.0)`. Final measured scores should be recorded in `progress.md` after validation.
 
 ## Baseline Scores
+
+Measured on March 29, 2026 with:
 
 - `MODEL_NAME=gemini-3.1-flash-lite-preview`
 - `API_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/`
@@ -207,7 +209,7 @@ Deployed Space:
 Scores:
 
 - `easy-password-reset`: `0.5000`
-- `medium-shipping-refund`: `1.0000`
+- `medium-shipping-refund`: `0.9999`
 - `hard-enterprise-outage`: `0.8020`
 - average: `0.7673`
 
@@ -216,4 +218,4 @@ Hosted verification:
 - `uv run python inference.py --env-url https://kushal1010-support-triage-env.hf.space --verbose`
 - matched the local baseline exactly with average `0.7673`
 
-Output is saved in the repo root at `support_triage_baseline_results.json`.
+Raw run output is saved in the repo root at [support_triage_baseline_results.json](/D:/Opensource_repos/OpenEnv/support_triage_baseline_results.json).

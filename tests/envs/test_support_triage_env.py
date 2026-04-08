@@ -52,7 +52,7 @@ def test_easy_task_golden_path_scores_full_episode() -> None:
     )
 
     assert result.done is True
-    assert result.partial_scores["episode"] == 1.0
+    assert 0.99 < result.partial_scores["episode"] < 1.0
 
 
 def test_invalid_repeat_inspect_is_penalized() -> None:

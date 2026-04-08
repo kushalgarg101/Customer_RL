@@ -12,6 +12,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import inference
 
 
+TEST_TMP_ROOT = Path(__file__).parent.parent / ".tmp_test_support_triage"
+
+
+def _test_tmp_path(name: str) -> Path:
+    TEST_TMP_ROOT.mkdir(exist_ok=True)
+    target = TEST_TMP_ROOT / name
+    if target.exists():
+        if target.is_file():
+            target.unlink()
+        else:
+            for child in target.iterdir():
+                if child.is_file():
+                    child.unlink()
+    return target
+
+
 def test_extract_json_object_accepts_strict_json() -> None:
     payload = inference.extract_json_object('{"action_type":"inspect_ticket"}')
     assert payload == {"action_type": "inspect_ticket"}
@@ -56,8 +72,8 @@ def test_normalize_action_payload_maps_queue_and_resolution_aliases() -> None:
     assert payload["resolution_code"] == "needs_followup"
 
 
-def test_load_dotenv_file_sets_missing_values_only(tmp_path, monkeypatch) -> None:
-    dotenv_path = tmp_path / ".env"
+def test_load_dotenv_file_sets_missing_values_only(monkeypatch) -> None:
+    dotenv_path = _test_tmp_path("dotenv.env")
     dotenv_path.write_text(
         "MODEL_NAME=gemini-2.5-flash\nOPENAI_API_KEY=test-key\nAPI_BASE_URL=https://example.test/v1\n",
         encoding="utf-8",
@@ -95,7 +111,7 @@ def test_emit_functions_match_parser_compatible_contract(capsys) -> None:
     assert lines == [
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
         "[STEP] step=1 task=easy-password-reset action={\"action_type\":\"inspect_ticket\"} reward=0.05 done=false error=null",
-        "[END] task=easy-password-reset success=true steps=1 score=1.00 rewards=0.05",
+        "[END] task=easy-password-reset success=true steps=1 score=1.0000 rewards=0.05",
     ]
 
 
@@ -143,7 +159,7 @@ def test_run_task_emits_per_step_structured_lines(monkeypatch, capsys) -> None:
 
         def state(self):
             return SimpleNamespace(
-                partial_scores={"episode": 1.0},
+                partial_scores={"episode": 0.9999},
                 cumulative_reward=1.0,
                 current_classification="account_access",
                 current_priority="medium",
@@ -197,9 +213,9 @@ def test_run_task_emits_per_step_structured_lines(monkeypatch, capsys) -> None:
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
         "[STEP] step=1 task=easy-password-reset action={\"action_type\":\"inspect_ticket\"} reward=0.05 done=false error=null",
         "[STEP] step=2 task=easy-password-reset action={\"action_type\":\"resolve_ticket\",\"resolution_code\":\"resolved\"} reward=0.95 done=true error=null",
-        "[END] task=easy-password-reset success=true steps=2 score=1.00 rewards=0.05,0.95",
+        "[END] task=easy-password-reset success=true steps=2 score=0.9999 rewards=0.05,0.95",
     ]
-    assert result["score"] == 1.0
+    assert result["score"] == 0.9999
     assert result["success"] is True
 
 
@@ -255,9 +271,9 @@ def test_run_task_emits_fallback_step_on_failure_before_env_step(
     assert [line for line in captured.out.strip().splitlines() if line] == [
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
         "[STEP] step=1 task=easy-password-reset action=null reward=0.00 done=true error=bad\\u0020response",
-        "[END] task=easy-password-reset success=false steps=0 score=0.00 rewards=",
+        "[END] task=easy-password-reset success=false steps=0 score=0.0001 rewards=",
     ]
-    assert result["score"] == 0.0
+    assert result["score"] == 0.0001
     assert result["success"] is False
     assert result["error"] == "bad response"
 
@@ -338,7 +354,7 @@ def test_run_task_preserves_partial_score_after_late_failure(
     assert [line for line in captured.out.strip().splitlines() if line] == [
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
         "[STEP] step=1 task=easy-password-reset action={\"action_type\":\"inspect_ticket\"} reward=0.25 done=false error=null",
-        "[END] task=easy-password-reset success=false steps=1 score=0.25 rewards=0.25",
+        "[END] task=easy-password-reset success=false steps=1 score=0.2500 rewards=0.25",
     ]
     assert result["score"] == 0.25
     assert result["success"] is False
@@ -366,17 +382,17 @@ def test_run_task_emits_start_step_and_end_when_client_init_fails(
     assert [line for line in captured.out.strip().splitlines() if line] == [
         "[START] task=easy-password-reset env=support_triage_env model=test-model",
         "[STEP] step=1 task=easy-password-reset action=null reward=0.00 done=true error=missing\\u0020token",
-        "[END] task=easy-password-reset success=false steps=0 score=0.00 rewards=",
+        "[END] task=easy-password-reset success=false steps=0 score=0.0001 rewards=",
     ]
-    assert result["score"] == 0.0
+    assert result["score"] == 0.0001
     assert result["success"] is False
     assert result["error"] == "missing token"
 
 
 def test_main_writes_results_without_extra_stdout(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, capsys
 ) -> None:
-    output_path = tmp_path / "results.json"
+    output_path = _test_tmp_path("results.json")
     task_results = {
         "easy-password-reset": {
             "task_id": "easy-password-reset",
